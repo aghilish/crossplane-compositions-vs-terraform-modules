@@ -1,0 +1,569 @@
+kind: Composition
+apiVersion: apiextensions.crossplane.io/v1
+metadata:
+  name: cluster-google
+  creationTimestamp: null
+  labels:
+    cluster: gke
+    provider: google
+spec:
+  compositeTypeRef:
+    apiVersion: example.org/v1alpha1
+    kind: CompositeCluster
+  mode: Pipeline
+  pipeline:
+    - step: patch-and-transform
+      functionRef:
+        name: crossplane-contrib-function-patch-and-transform
+      input:
+        apiVersion: pt.fn.crossplane.io/v1beta1
+        kind: Resources
+        resources:
+          - base:
+              apiVersion: container.gcp.upbound.io/v1beta1
+              kind: Cluster
+              spec:
+                forProvider:
+                  clusterAutoscaling:
+                    - autoProvisioningDefaults:
+                        - management:
+                            - autoRepair: true
+                              autoUpgrade: true
+                  initialNodeCount: 1
+                  location: us-east1
+                  removeDefaultNodePool: true
+            connectionDetails:
+              - fromConnectionSecretKey: kubeconfig
+                name: kubeconfig
+                type: FromConnectionSecretKey
+              - fromConnectionSecretKey: kubeconfig
+                name: value
+                type: FromConnectionSecretKey
+            name: gkecluster
+            patches:
+              - fromFieldPath: spec.id
+                toFieldPath: metadata.name
+              - fromFieldPath: spec.id
+                toFieldPath: spec.writeConnectionSecretToRef.name
+                transforms:
+                  - string:
+                      fmt: "%s-cluster"
+                      type: Format
+                    type: string
+              - fromFieldPath: spec.claimRef.namespace
+                toFieldPath: spec.writeConnectionSecretToRef.namespace
+              - fromFieldPath: spec.parameters.version
+                toFieldPath: spec.forProvider.minMasterVersion
+              - fromFieldPath: metadata.name
+                toFieldPath: status.clusterName
+                type: ToCompositeFieldPath
+              - fromFieldPath: status.message
+                toFieldPath: status.controlPlaneStatus
+                type: ToCompositeFieldPath
+              - fromFieldPath: status.atProvider.clusterIpv4Cidr
+                toFieldPath: status.field1
+                type: ToCompositeFieldPath
+          - base:
+              apiVersion: container.gcp.upbound.io/v1beta1
+              kind: NodePool
+              spec:
+                forProvider:
+                  autoscaling:
+                    - maxNodeCount: 3
+                  clusterSelector:
+                    matchControllerRef: true
+                  management:
+                    - autoRepair: true
+                      autoUpgrade: true
+                  nodeConfig:
+                    - oauthScopes:
+                        - https://www.googleapis.com/auth/cloud-platform
+                      taint:
+                        - effect: NO_EXECUTE
+                          key: node.cilium.io/agent-not-ready
+                          value: "true"
+                  nodeLocations:
+                    - us-east1-b
+                    - us-east1-c
+                    - us-east1-d
+            name: nodepool
+            patches:
+              - fromFieldPath: spec.id
+                toFieldPath: metadata.name
+              - fromFieldPath: spec.parameters.version
+                toFieldPath: spec.forProvider.version
+              - fromFieldPath: spec.parameters.minNodeCount
+                toFieldPath: spec.forProvider.initialNodeCount
+              - fromFieldPath: spec.parameters.minNodeCount
+                toFieldPath: spec.forProvider.autoscaling[0].minNodeCount
+              - fromFieldPath: spec.parameters.nodeSize
+                toFieldPath: spec.forProvider.nodeConfig[0].machineType
+                transforms:
+                  - map:
+                      large: e2-standard-16
+                      medium: e2-standard-4
+                      small: e2-standard-2
+                    type: map
+              - fromFieldPath: status.message
+                toFieldPath: status.nodePoolStatus
+                type: ToCompositeFieldPath
+          - base:
+              apiVersion: helm.crossplane.io/v1beta1
+              kind: ProviderConfig
+              spec:
+                credentials:
+                  secretRef:
+                    key: kubeconfig
+                    name: kubeconfig
+                    namespace: crossplane-system
+                  source: Secret
+                identity:
+                  secretRef:
+                    key: creds
+                    name: gcp-creds
+                    namespace: crossplane-system
+                  source: Secret
+                  type: GoogleApplicationCredentials
+            name: helm
+            patches:
+              - fromFieldPath: spec.id
+                toFieldPath: metadata.name
+              - fromFieldPath: spec.claimRef.namespace
+                toFieldPath: spec.credentials.secretRef.namespace
+              - fromFieldPath: spec.id
+                toFieldPath: spec.credentials.secretRef.name
+                transforms:
+                  - string:
+                      fmt: "%s-cluster"
+                      type: Format
+                    type: string
+            readinessChecks:
+              - type: None
+          - base:
+              apiVersion: helm.crossplane.io/v1beta1
+              kind: Release
+              spec:
+                forProvider:
+                  chart:
+                    name: cilium
+                    repository: https://helm.cilium.io
+                    version: 1.14.2
+                  namespace: kube-system
+                  set:
+                    - name: nodeinit.enabled
+                      value: "true"
+                    - name: nodeinit.reconfigureKubelet
+                      value: "true"
+                    - name: nodeinit.removeCbrBridge
+                      value: "true"
+                    - name: cni.binPath
+                      value: /home/kubernetes/bin
+                    - name: gke.enabled
+                      value: "true"
+                    - name: ipam.mode
+                      value: kubernetes
+                    - name: ipv4NativeRoutingCIDR
+                    - name: authentication.mutual.spire.enabled
+                      value: "true"
+                    - name: authentication.mutual.spire.install.enabled
+                      value: "true"
+                rollbackLimit: 3
+            name: cilium
+            patches:
+              - fromFieldPath: spec.id
+                toFieldPath: metadata.name
+                transforms:
+                  - string:
+                      fmt: "%s-cilium"
+                      type: Format
+                    type: string
+              - fromFieldPath: spec.id
+                toFieldPath: spec.providerConfigRef.name
+              - fromFieldPath: status.field1
+                toFieldPath: spec.forProvider.set[6].value
+                type: FromCompositeFieldPath
+          - base:
+              apiVersion: kubernetes.crossplane.io/v1alpha1
+              kind: ProviderConfig
+              spec:
+                credentials:
+                  secretRef:
+                    key: kubeconfig
+                    name: kubeconfig
+                    namespace: crossplane-system
+                  source: Secret
+                identity:
+                  secretRef:
+                    key: creds
+                    name: gcp-creds
+                    namespace: crossplane-system
+                  source: Secret
+                  type: GoogleApplicationCredentials
+            name: kubernetes
+            patches:
+              - fromFieldPath: spec.id
+                toFieldPath: metadata.name
+              - fromFieldPath: spec.claimRef.namespace
+                toFieldPath: spec.credentials.secretRef.namespace
+              - fromFieldPath: spec.id
+                toFieldPath: spec.credentials.secretRef.name
+                transforms:
+                  - string:
+                      fmt: "%s-cluster"
+                      type: Format
+                    type: string
+            readinessChecks:
+              - type: None
+    - step: app-crossplane
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if
+            .observed.composite.resource.spec.parameters.apps.crossplane.enabled
+            }}
+
+            ---
+
+            apiVersion: helm.crossplane.io/v1beta1
+
+            kind: Release
+
+            metadata:
+              name: '{{ $.observed.composite.resource.spec.id }}-app-crossplane'
+              annotations:
+                crossplane.io/external-name: crossplane
+                gotemplating.fn.crossplane.io/composition-resource-name: '{{ $.observed.composite.resource.spec.id }}-app-crossplane'
+            spec:
+              forProvider:
+                chart:
+                  name: crossplane
+                  repository: https://charts.crossplane.io/stable
+                  version: 1.14.5
+                  url: ""
+                set: []
+                namespace: crossplane-system
+              rollbackLimit: 3
+              providerConfigRef:
+                name: '{{ $.observed.composite.resource.spec.id }}'
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: app-openfunction
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if
+            .observed.composite.resource.spec.parameters.apps.openfunction.enabled
+            }}
+
+            ---
+
+            apiVersion: helm.crossplane.io/v1beta1
+
+            kind: Release
+
+            metadata:
+              name: '{{ $.observed.composite.resource.spec.id }}-app-openfunction'
+              annotations:
+                crossplane.io/external-name: openfunction
+                gotemplating.fn.crossplane.io/composition-resource-name: '{{ $.observed.composite.resource.spec.id }}-app-openfunction'
+            spec:
+              forProvider:
+                chart:
+                  name: openfunction
+                  repository: ""
+                  version: ""
+                  url: https://openfunction.github.io/charts/openfunction-v1.2.0-v0.7.0.tgz
+                set:
+                  - name: revisionController.enable
+                    value: "true"
+                namespace: openfunction
+              rollbackLimit: 3
+              providerConfigRef:
+                name: '{{ $.observed.composite.resource.spec.id }}'
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: app-dapr
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if .observed.composite.resource.spec.parameters.apps.dapr.enabled
+            }}
+
+            ---
+
+            apiVersion: helm.crossplane.io/v1beta1
+
+            kind: Release
+
+            metadata:
+              name: '{{ $.observed.composite.resource.spec.id }}-app-dapr'
+              annotations:
+                crossplane.io/external-name: dapr
+                gotemplating.fn.crossplane.io/composition-resource-name: '{{ $.observed.composite.resource.spec.id }}-app-dapr'
+            spec:
+              forProvider:
+                chart:
+                  name: dapr
+                  repository: https://dapr.github.io/helm-charts/
+                  version: 1.12.4
+                  url: ""
+                set: []
+                namespace: dapr-system
+              rollbackLimit: 3
+              providerConfigRef:
+                name: '{{ $.observed.composite.resource.spec.id }}'
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: app-external-secrets
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if
+            .observed.composite.resource.spec.parameters.apps.externalSecrets.enabled
+            }}
+
+            ---
+
+            apiVersion: helm.crossplane.io/v1beta1
+
+            kind: Release
+
+            metadata:
+              name: '{{ $.observed.composite.resource.spec.id }}-app-external-secrets'
+              annotations:
+                crossplane.io/external-name: external-secrets
+                gotemplating.fn.crossplane.io/composition-resource-name: '{{ $.observed.composite.resource.spec.id }}-app-external-secrets'
+            spec:
+              forProvider:
+                chart:
+                  name: external-secrets
+                  repository: https://charts.external-secrets.io
+                  version: 0.9.11
+                  url: ""
+                set:
+                  - name: installCRDs
+                    value: "true"
+                namespace: external-secrets
+              rollbackLimit: 3
+              providerConfigRef:
+                name: '{{ $.observed.composite.resource.spec.id }}'
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: secret-store
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if and
+            .observed.composite.resource.spec.parameters.apps.externalSecrets.enabled
+            .observed.composite.resource.spec.parameters.apps.externalSecrets.store
+            }}
+
+            ---
+
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+
+            kind: Object
+
+            metadata:
+              name: {{ $.observed.composite.resource.spec.id }}-secret-store
+              annotations:
+                crossplane.io/external-name: google
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $.observed.composite.resource.spec.id }}-secret-store
+            spec:
+              {{ if $.observed.composite.resource.spec.parameters.apps.externalSecrets.googleCredentialsKey }}
+              references:
+                - patchesFrom:
+                    apiVersion: gcp.upbound.io/v1beta1
+                    kind: ProviderConfig
+                    name: default
+                    fieldPath: spec.projectID
+                  toFieldPath: spec.provider.gcpsm.projectID
+              {{ end }}
+              forProvider:
+                manifest:
+                  apiVersion: external-secrets.io/v1beta1
+                  kind: ClusterSecretStore
+                  metadata:
+                    name: google
+                  spec:
+                    provider:
+                      {{ if $.observed.composite.resource.spec.parameters.apps.externalSecrets.googleCredentialsKey }}
+                      gcpsm:
+                        auth:
+                          secretRef:
+                            secretAccessKeySecretRef:
+                              name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+                              key: {{ $.observed.composite.resource.spec.parameters.apps.externalSecrets.googleCredentialsKey }}
+                              namespace: {{ $.observed.composite.resource.spec.parameters.creds.namespace }}
+                      {{ end }}
+                      {{ if and $.observed.composite.resource.spec.parameters.apps.externalSecrets.awsAccessKeyIDKey $.observed.composite.resource.spec.parameters.apps.externalSecrets.awsSecretAccessKeyKey }}
+                      aws:
+                        service: SecretsManager
+                        region: us-east-1
+                        auth:
+                          secretRef:
+                            accessKeyIDSecretRef:
+                              name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+                              key: {{ $.observed.composite.resource.spec.parameters.apps.externalSecrets.awsAccessKeyIDKey }}
+                              namespace: {{ $.observed.composite.resource.spec.parameters.creds.namespace }}
+                            secretAccessKeySecretRef:
+                              name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+                              key: {{ $.observed.composite.resource.spec.parameters.apps.externalSecrets.awsSecretAccessKeyKey }}
+                              namespace: {{ $.observed.composite.resource.spec.parameters.creds.namespace }}
+                      {{ end }}
+                      {{ if $.observed.composite.resource.spec.parameters.apps.externalSecrets.azureVaultUrl }}
+                      azurekv:
+                        authType: ManagedIdentity
+                        vaultUrl: {{ $.observed.composite.resource.spec.parameters.apps.externalSecrets.azureVaultUrl }}
+                      {{ end }}
+              providerConfigRef:
+                name: {{ $.observed.composite.resource.spec.id }}
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: secrets
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ range
+            .observed.composite.resource.spec.parameters.apps.externalSecrets.secrets
+            }}
+
+            ---
+
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+
+            kind: Object
+
+            metadata:
+              name: '{{ $.observed.composite.resource.spec.id }}-secret-{{ .toSecret }}'
+              annotations:
+                crossplane.io/external-name: '{{ .toSecret }}'
+                gotemplating.fn.crossplane.io/composition-resource-name: '{{ $.observed.composite.resource.spec.id }}-secret-{{ .toSecret }}'
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: external-secrets.io/v1beta1
+                  kind: ExternalSecret
+                  metadata:
+                    name: '{{ .toSecret }}'
+                    namespace: '{{ .toNamespace }}'
+                  spec:
+                    refreshInterval: 1h
+                    secretStoreRef:
+                      kind: ClusterSecretStore
+                      name: google
+                    target:
+                      name: '{{ .toSecret }}'
+                      creationPolicy: Owner
+                      template:
+                        type: '{{ .type }}'
+                    dataFrom:
+                      - extract:
+                          key: '{{ .fromSecret }}'
+              providerConfigRef:
+                name: '{{ $.observed.composite.resource.spec.id }}'
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: namespaces
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ range .observed.composite.resource.spec.parameters.namespaces }}
+
+            ---
+
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+
+            kind: Object
+
+            metadata:
+              name: {{ $.observed.composite.resource.spec.id }}-ns-{{ . }}
+              annotations:
+                crossplane.io/external-name: {{ . }}
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $.observed.composite.resource.spec.id }}-ns-{{ . }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: "v1"
+                  kind: "Namespace"
+                  metadata:
+                    name: {{ . }}
+              providerConfigRef:
+                name: {{ $.observed.composite.resource.spec.id }}
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: creds
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        inline:
+          template: >-
+            {{ if .observed.composite.resource.spec.parameters.creds }}
+
+            ---
+
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+
+            kind: Object
+
+            metadata:
+              name: {{ $.observed.composite.resource.spec.id }}-creds
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $.observed.composite.resource.spec.id }}-creds
+                crossplane.io/external-name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+            spec:
+              references:
+              {{ range $.observed.composite.resource.spec.parameters.creds.keys }}
+              - patchesFrom:
+                  apiVersion: v1
+                  kind: Secret
+                  name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+                  namespace: {{ $.observed.composite.resource.spec.parameters.creds.namespace }}
+                  fieldPath: data.{{ . }}
+                toFieldPath: data.{{ . }}
+              {{ end }}
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $.observed.composite.resource.spec.parameters.creds.name }}
+                    namespace: {{ $.observed.composite.resource.spec.parameters.creds.namespace }}
+              providerConfigRef:
+                name: {{ $.observed.composite.resource.spec.id }}
+            {{ end }}
+        kind: GoTemplate
+        source: Inline
+    - step: automatically-detect-ready-composed-resources
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
+  writeConnectionSecretsToNamespace: crossplane-system
