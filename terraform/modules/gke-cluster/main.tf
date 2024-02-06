@@ -56,8 +56,8 @@ module "cluster" {
   network_project_id            = var.host_project
   network                       = var.network
   subnetwork                    = var.subnetwork
-  ip_range_pods                 = var.project == "bdaa-ctda-kg-dev-sc-rkf7q" ? "ctda-kg-pod-range" : "pod-range-01"
-  ip_range_services             = var.project == "bdaa-ctda-kg-dev-sc-rkf7q" ? "ctda-kg-svc-range" : "svc-range-01"
+  ip_range_pods                 = var.project ==  "pod-range-01"
+  ip_range_services             = var.project ==  "svc-range-01"
   zones                         = var.zones
   horizontal_pod_autoscaling    = true
   http_load_balancing           = true
